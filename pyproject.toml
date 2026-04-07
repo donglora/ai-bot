@@ -1,0 +1,21 @@
+[project]
+name = "donglora-ai-bot"
+version = "0.1.0"
+description = "MeshCore AI chatbot — default mesh name 'Orac'"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Stephen Waits" }]
+dependencies = [
+    "donglora-python",
+    "anthropic",
+    "cobs",
+    "pyserial",
+    "pycryptodome",
+    "pynacl",
+]
+
+[dependency-groups]
+dev = ["ruff"]
+
+[tool.uv]
+package = false
