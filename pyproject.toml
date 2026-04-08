@@ -6,7 +6,7 @@ license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Stephen Waits" }]
 dependencies = [
-    "donglora-python",
+    "donglora",
     "anthropic",
     "cobs",
     "pyserial",
@@ -19,3 +19,17 @@ dev = ["ruff"]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+donglora = { path = "../client-py", editable = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "ARG", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["donglora", "orac"]
