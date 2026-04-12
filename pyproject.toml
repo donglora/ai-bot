@@ -15,7 +15,16 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ruff"]
+dev = ["ruff", "pytest", "pyright"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["orac", "tests", "ai_bot.py"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = false
 
 [tool.uv]
 package = false

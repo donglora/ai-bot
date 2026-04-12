@@ -6,20 +6,25 @@ import hashlib
 import logging
 import os
 import struct
+import threading
 import time
+from dataclasses import dataclass, field
 
 from orac.constants import (
     DEDUP_TTL,
     DM_DEDUP_TTL,
+    MIN_HASH_SIZE,
     PENDING_DM_TTL,
     RESP_SERVER_LOGIN_OK,
+    ROUTE_TTL_S,
 )
 from orac.crypto import (
     build_advert_payload,
+    build_peer_plaintext,
     ecdh_shared_secret,
     grp_encrypt,
     my_hash,
-    peer_encrypt,
+    peer_encrypt_plaintext,
     raw_peer_encrypt,
     verify_advert_signature,
 )
@@ -27,31 +32,102 @@ from orac.crypto import (
 log = logging.getLogger("orac")
 
 # ── Route table ──────────────────────────────────────────────────
-# src_hash (int) -> (reversed_path_hops: list[bytes], hash_size: int)
 
-_route_table: dict[int, tuple[list[bytes], int]] = {}
+
+@dataclass
+class RouteEntry:
+    """Learned return route with TTL and SNR metadata."""
+
+    hops: list[bytes]  # closest-relay-first after reversal of inbound path
+    hash_size: int
+    learned_at: float = field(default_factory=time.monotonic)
+    last_snr: float | None = None
+
+
+_route_table: dict[int, RouteEntry] = {}
+_route_lock = threading.Lock()
 
 _RT_NAMES: dict[int, str] = {0: "tflood", 1: "flood", 2: "direct", 3: "tdirect"}
 
 
-def learn_route(src_hash: int, path_hops: list[bytes], hash_size: int) -> None:
+def learn_route(
+    src_hash: int,
+    path_hops: list[bytes],
+    hash_size: int,
+    snr: float | None = None,
+) -> None:
     """Learn a return route from an incoming packet's path.
 
-    path_hops is ordered closest-relay-first as received.
-    We reverse it so our outgoing path goes through the same relays
-    back toward the sender. Prefers larger hash sizes (3 > 2 > 1).
+    path_hops is ordered closest-relay-first as received. We reverse it
+    so our outgoing path traverses the same relays back toward the sender.
+
+    Upgrade rule: newer entry wins if its hash_size is not smaller AND
+    its SNR is not >=3 dB worse than the existing entry's last SNR.
+
+    Policy: 1-byte hashes are rejected (see :data:`MIN_HASH_SIZE`). A peer
+    using 1-byte path encoding simply won't get a cached route — our replies
+    to them will flood instead (flood packets always use 2-byte hash mode).
     """
-    existing = _route_table.get(src_hash)
-    if existing is not None:
-        _, existing_hs = existing
-        if hash_size < existing_hs:
-            return  # Don't downgrade hash size
-    _route_table[src_hash] = (list(reversed(path_hops)), hash_size)
+    if hash_size < MIN_HASH_SIZE:
+        return
+    reversed_hops = list(reversed(path_hops))
+    with _route_lock:
+        existing = _route_table.get(src_hash)
+        if existing is not None:
+            if hash_size < existing.hash_size:
+                return  # never downgrade hash size
+            if snr is not None and existing.last_snr is not None and snr < existing.last_snr - 3.0:
+                # New path is ≥3 dB worse; keep current path and just refresh
+                # last-seen snr for TTL purposes.
+                existing.learned_at = time.monotonic()
+                return
+        _route_table[src_hash] = RouteEntry(
+            hops=reversed_hops,
+            hash_size=hash_size,
+            learned_at=time.monotonic(),
+            last_snr=snr,
+        )
 
 
 def get_route(dest_hash: int) -> tuple[list[bytes], int] | None:
-    """Get a learned return route for a destination, or None if unknown."""
-    return _route_table.get(dest_hash)
+    """Return a learned route if it exists and hasn't expired, else None.
+
+    Legacy tuple return preserved so callers that only care about (hops,
+    hash_size) keep working. Use :func:`get_route_entry` to access SNR.
+    """
+    with _route_lock:
+        entry = _route_table.get(dest_hash)
+        if entry is None:
+            return None
+        if time.monotonic() - entry.learned_at > ROUTE_TTL_S:
+            # Expired: lazy-evict so the next learn can re-populate.
+            del _route_table[dest_hash]
+            return None
+        return (list(entry.hops), entry.hash_size)
+
+
+def get_route_entry(dest_hash: int) -> RouteEntry | None:
+    """Return the full RouteEntry if live, else None."""
+    with _route_lock:
+        entry = _route_table.get(dest_hash)
+        if entry is None:
+            return None
+        if time.monotonic() - entry.learned_at > ROUTE_TTL_S:
+            del _route_table[dest_hash]
+            return None
+        return entry
+
+
+def forget_route(dest_hash: int) -> bool:
+    """Hard-delete a learned route. Returns True if an entry was removed."""
+    with _route_lock:
+        return _route_table.pop(dest_hash, None) is not None
+
+
+def route_table_size() -> int:
+    """Current live route table size (after lazy eviction — call sparingly)."""
+    with _route_lock:
+        return len(_route_table)
 
 
 def route_name(route_type: int) -> str:
@@ -230,10 +306,40 @@ def build_advert_packet() -> bytes:
 
 def build_dm_packet(peer_pubkey: bytes, text: str) -> bytes:
     """Build a TXT_MSG DM packet using learned route or flood."""
+    packet, _ = build_dm_packet_with_plaintext(peer_pubkey, text)
+    return packet
+
+
+def build_dm_packet_with_plaintext(
+    peer_pubkey: bytes,
+    text: str,
+    force_flood: bool = False,
+    ts: int | None = None,
+    attempt: int = 0,
+) -> tuple[bytes, bytes]:
+    """Build a TXT_MSG DM packet and return (packet, plaintext).
+
+    Plaintext is needed to precompute the expected ACK CRC that the
+    recipient's firmware will emit back to us.
+
+    :param ts: override the plaintext timestamp; defaults to ``int(time.time())``.
+        Callers that need retry-stable ACK CRCs should pass a fixed ts and
+        increment ``attempt`` on each retry.
+    :param attempt: value for the ``txt_type_attempt`` plaintext byte (0-63).
+    :param force_flood: if True, emit a flood route-type packet regardless of
+        any learned route in the table.
+    """
+    plaintext = build_peer_plaintext(text, ts=ts, attempt=attempt)
     shared_secret = ecdh_shared_secret(peer_pubkey)
-    mac_ct = peer_encrypt(shared_secret, text)
+    mac_ct = peer_encrypt_plaintext(shared_secret, plaintext)
     dm_payload = bytes([peer_pubkey[0], my_hash()]) + mac_ct
-    return _build_routed_packet(0x02, dm_payload, peer_pubkey[0])
+    if force_flood:
+        header = bytes([(0x02 << 2) | 1])  # flood route_type = 1
+        path_len = bytes([0x40])  # 0 hops, 2-byte hash mode
+        packet = header + path_len + dm_payload
+    else:
+        packet = _build_routed_packet(0x02, dm_payload, peer_pubkey[0])
+    return packet, plaintext
 
 
 def build_ack_packet(ack_crc: bytes, dest_hash: int) -> bytes:
@@ -241,8 +347,32 @@ def build_ack_packet(ack_crc: bytes, dest_hash: int) -> bytes:
     return _build_routed_packet(0x03, ack_crc, dest_hash)
 
 
+def build_multiack_packet(ack_crc: bytes, remaining: int, dest_hash: int) -> bytes:
+    """Build a MULTIPART ACK (PAYLOAD_TYPE_MULTIPART = 0x0A).
+
+    Upstream `createMultiAck()` (src/Mesh.cpp:570-583 in commit b1ca3d1):
+    the payload is 5 bytes — ``(remaining << 4) | PAYLOAD_TYPE_ACK(0x03)``
+    followed by the 4-byte ACK CRC.
+
+    MULTIPART ACKs are emitted ONLY on direct-routed returns (see
+    :func:`Mesh::routeDirectRecvAcks` upstream). Caller should verify a
+    direct route exists for ``dest_hash`` and skip MULTIPART otherwise.
+    """
+    if len(ack_crc) != 4:
+        raise ValueError(f"ack_crc must be 4 bytes, got {len(ack_crc)}")
+    if not 0 <= remaining <= 15:
+        raise ValueError(f"remaining must fit a nibble (0..15), got {remaining}")
+    payload = bytes([(remaining << 4) | 0x03]) + ack_crc
+    return _build_routed_packet(0x0A, payload, dest_hash)
+
+
 def build_path_return_packet(peer_pubkey: bytes, path_hops: list[bytes], hash_size: int) -> bytes:
-    """Build a PATH return (0x08) so the sender can learn a direct route to us."""
+    """Build a PATH return (0x08) so the sender can learn a direct route to us.
+
+    Rejects 1-byte hash encodings (see :data:`MIN_HASH_SIZE`).
+    """
+    if hash_size < MIN_HASH_SIZE:
+        raise ValueError(f"refusing to build PATH_RETURN with hash_size={hash_size}")
     reversed_hops = list(reversed(path_hops))
     hash_size_code = hash_size - 1
     path_len_byte = (hash_size_code << 6) | (len(reversed_hops) & 0x3F)

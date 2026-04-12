@@ -138,12 +138,31 @@ def ecdh_shared_secret(peer_ed25519_pub: bytes) -> bytes:
     return crypto_scalarmult(my_x25519, peer_x25519)
 
 
-def peer_encrypt(shared_secret: bytes, text: str) -> bytes:
-    """Encrypt a DM plaintext. Returns mac(2) + ciphertext."""
-    plaintext = struct.pack("<I", int(time.time())) + b"\x00"
+def build_peer_plaintext(text: str, ts: int | None = None, attempt: int = 0) -> bytes:
+    """Build a DM plaintext blob: timestamp(4 LE) + txt_type_attempt(1) + text + \\x00 + zero-pad to 16.
+
+    Using the timestamp + attempt fields from the MeshCore TXT_MSG plaintext layout.
+    Callers that need the expected ACK hash must keep this plaintext.
+    """
+    if ts is None:
+        ts = int(time.time())
+    plaintext = struct.pack("<I", ts) + bytes([attempt & 0xFF])
     plaintext += text.encode("utf-8") + b"\x00"
     pad_len = (16 - len(plaintext) % 16) % 16
-    plaintext += b"\x00" * pad_len
+    return plaintext + b"\x00" * pad_len
+
+
+def peer_encrypt(shared_secret: bytes, text: str) -> bytes:
+    """Encrypt a DM plaintext. Returns mac(2) + ciphertext.
+
+    Convenience wrapper; callers that also need the plaintext should use
+    :func:`build_peer_plaintext` + :func:`peer_encrypt_plaintext`.
+    """
+    return peer_encrypt_plaintext(shared_secret, build_peer_plaintext(text))
+
+
+def peer_encrypt_plaintext(shared_secret: bytes, plaintext: bytes) -> bytes:
+    """Encrypt a pre-built DM plaintext. Returns mac(2) + ciphertext."""
     cipher = AES.new(shared_secret[:16], AES.MODE_ECB)
     ciphertext = b""
     for i in range(0, len(plaintext), 16):
@@ -302,6 +321,7 @@ def raw_peer_encrypt(shared_secret: bytes, plaintext: bytes) -> bytes:
 __all__: list[str] = [
     "aes_ecb_encrypt",
     "build_advert_payload",
+    "build_peer_plaintext",
     "channel_count",
     "channel_hash",
     "channel_secret_from_hashtag",
@@ -317,6 +337,7 @@ __all__: list[str] = [
     "parse_grp_plaintext",
     "parse_peer_plaintext",
     "peer_encrypt",
+    "peer_encrypt_plaintext",
     "peer_verify_and_decrypt",
     "pubkey_bytes",
     "raw_peer_encrypt",
