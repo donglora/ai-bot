@@ -161,6 +161,16 @@ def _handle_sigusr1(signum: int, _frame: object) -> None:  # noqa: ARG001
         rt.dump_metrics()
 
 
+def _handle_sigint(_signum: int, _frame: object) -> None:
+    """SIGINT: flag the IOThread for shutdown *before* KeyboardInterrupt
+    unwinds the main thread, so the interrupted serial read exits cleanly
+    instead of looking like a device disconnect."""
+    rt = _active_runtime
+    if rt is not None:
+        rt.io_thread.stop()
+    raise KeyboardInterrupt
+
+
 # ── Connect loop ─────────────────────────────────────────────────
 
 
@@ -235,6 +245,9 @@ def main() -> None:
     # SIGUSR1 dumps metrics; not available on all platforms (e.g. Windows).
     with contextlib.suppress(ValueError, AttributeError):
         signal.signal(signal.SIGUSR1, _handle_sigusr1)
+    # SIGINT: pre-set stop_event so IOThread's interrupted read exits cleanly.
+    with contextlib.suppress(ValueError, AttributeError):
+        signal.signal(signal.SIGINT, _handle_sigint)
 
     port = sys.argv[1] if len(sys.argv) > 1 else None
 

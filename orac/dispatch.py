@@ -55,7 +55,7 @@ from orac.meshcore import (
 )
 from orac.reply_state import PendingAckTable, ReplyCache
 from orac.runtime import Metrics, TxItem, TxPriority, TxQueue
-from orac.state import get_channel_history, record_channel_msg
+from orac.state import get_channel_history, record_channel_msg, record_heard_position
 from orac.worker import ChannelReplyWork, ChannelScreenWork, DmReplyWork, Worker
 
 log = logging.getLogger("orac")
@@ -220,10 +220,12 @@ class RxRouter:
         result = try_decode_advert(raw_payload)
         if result is None:
             return
-        adv_pubkey, name = result
+        adv_pubkey, name, node_type, position = result
         if adv_pubkey == pubkey_bytes():
             return  # our own advert echo
         register_node(adv_pubkey, name)
+        if node_type == 2 and position is not None:
+            record_heard_position(position[0], position[1])
         logfmt.net(
             "ADVERT %s (hash=0x%02x pk=%s...)",
             name,

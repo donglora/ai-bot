@@ -21,6 +21,7 @@ _state: dict[str, dict[str, object]] = {
     "channel_history": {},  # channel_name -> list of messages
     "dm_history": {},  # peer_pubkey_hex -> list of messages
     "known_nodes": {},  # pubkey_hex -> {"name": str, "seen": float}
+    "heard_positions": [],  # list of [lat, lon] rounded to 3 decimals (dedup'd)
 }
 
 
@@ -92,6 +93,68 @@ def evict_node(pubkey_hex: str) -> None:
 def known_node_count() -> int:
     """Number of known nodes."""
     return len(_state["known_nodes"])
+
+
+# ── Heard repeater positions ─────────────────────────────────────
+
+
+def record_heard_position(lat: float, lon: float) -> None:
+    """Record a repeater position (rounded to 3 decimals, dedup'd as a set)."""
+    entry = [round(lat, 3), round(lon, 3)]
+    positions: list[list[float]] = _state["heard_positions"]  # type: ignore[assignment]
+    if entry in positions:
+        return
+    positions.append(entry)
+    save_state()
+
+
+def heard_position_count() -> int:
+    return len(_state["heard_positions"])  # type: ignore[arg-type]
+
+
+def _iqr_bounds(values: list[float]) -> tuple[float, float]:
+    """Return (lo, hi) IQR fence: [Q1 - 1.5*IQR, Q3 + 1.5*IQR]."""
+    s = sorted(values)
+    n = len(s)
+
+    # Linear interpolation quantiles (same as numpy default).
+    def q(p: float) -> float:
+        idx = p * (n - 1)
+        lo_i = int(idx)
+        hi_i = min(lo_i + 1, n - 1)
+        frac = idx - lo_i
+        return s[lo_i] * (1 - frac) + s[hi_i] * frac
+
+    q1, q3 = q(0.25), q(0.75)
+    iqr = q3 - q1
+    return q1 - 1.5 * iqr, q3 + 1.5 * iqr
+
+
+def heard_positions() -> list[tuple[float, float]]:
+    """All recorded heard positions."""
+    return [(p[0], p[1]) for p in _state["heard_positions"]]  # type: ignore[union-attr]
+
+
+def average_heard_position() -> tuple[float, float] | None:
+    """IQR-trimmed mean of heard positions. Rejects lat/lon outliers
+    (e.g., null-island 0/0 or bogus points) before averaging. Falls back
+    to a plain mean when there are too few points for a robust IQR."""
+    positions = heard_positions()
+    if not positions:
+        return None
+    if len(positions) < 4:
+        lat = sum(p[0] for p in positions) / len(positions)
+        lon = sum(p[1] for p in positions) / len(positions)
+        return lat, lon
+
+    lat_lo, lat_hi = _iqr_bounds([p[0] for p in positions])
+    lon_lo, lon_hi = _iqr_bounds([p[1] for p in positions])
+    kept = [p for p in positions if lat_lo <= p[0] <= lat_hi and lon_lo <= p[1] <= lon_hi]
+    if not kept:
+        kept = positions
+    lat = sum(p[0] for p in kept) / len(kept)
+    lon = sum(p[1] for p in kept) / len(kept)
+    return lat, lon
 
 
 # ── Channel history ──────────────────────────────────────────────

@@ -300,9 +300,22 @@ def compute_mac(secret: bytes, ciphertext: bytes) -> bytes:
 
 
 def build_advert_payload() -> bytes:
-    """Build the inner ADVERT payload: pubkey + timestamp + signature + app_data."""
+    """Build the inner ADVERT payload: pubkey + timestamp + signature + app_data.
+
+    If we've heard at least 5 unique repeater positions, include our averaged
+    position in the advert's app_data.
+    """
+    from orac.state import average_heard_position, heard_position_count
+
     timestamp = struct.pack("<I", int(time.time()))
-    app_data = bytes([0x81]) + BOT_NAME.encode("utf-8")
+    name_bytes = BOT_NAME.encode("utf-8")
+    if heard_position_count() >= 5 and (avg := average_heard_position()) is not None:
+        lat_i = int(round(avg[0] * 1_000_000))
+        lon_i = int(round(avg[1] * 1_000_000))
+        # flags: has_name (0x80) | has_location (0x10) | chat node (0x01)
+        app_data = bytes([0x91]) + struct.pack("<ii", lat_i, lon_i) + name_bytes
+    else:
+        app_data = bytes([0x81]) + name_bytes
     sign_msg = _pubkey_bytes + timestamp + app_data
     signature = sign(sign_msg)
     return _pubkey_bytes + timestamp + signature + app_data

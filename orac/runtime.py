@@ -28,6 +28,8 @@ from enum import IntEnum
 from typing import Any
 
 import donglora as dl
+from serial import SerialException
+
 from orac import logfmt
 from orac.constants import (
     ADVERT_INTERVAL,
@@ -413,7 +415,13 @@ class IOThread(threading.Thread):
                 for _ in range(RX_DRAIN_PER_TICK):
                     if self._stop_event.is_set():
                         return
-                    pkt = dl.recv(self._conn)
+                    try:
+                        pkt = dl.recv(self._conn)
+                    except (SerialException, OSError):
+                        # Shutdown: signal interrupted a blocking serial read.
+                        if self._stop_event.is_set():
+                            return
+                        raise
                     if pkt is None:
                         break
                     self._metrics.inc("rx_total")
@@ -453,6 +461,8 @@ class IOThread(threading.Thread):
                             log.exception("gauge_collector failed")
                     self._last_gauge_dump = now
         except BaseException as e:  # surface fatal errors to main thread
+            if self._stop_event.is_set():
+                return  # expected: shutdown race
             self.last_error = e
             log.exception("IOThread died: %s", e)
             raise

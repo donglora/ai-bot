@@ -554,8 +554,15 @@ def try_decrypt_anon_req(
     return sender_pubkey, peer_name, None
 
 
-def try_decode_advert(raw_payload: bytes) -> tuple[bytes, str] | None:
-    """Decode and verify an ADVERT payload. Returns (pubkey, name) or None."""
+def try_decode_advert(
+    raw_payload: bytes,
+) -> tuple[bytes, str, int, tuple[float, float] | None] | None:
+    """Decode and verify an ADVERT payload.
+
+    Returns (pubkey, name, node_type, position_or_None) or None on failure.
+    node_type: low nibble of app_data flags (1=chat, 2=repeater, 3=room).
+    position: (lat, lon) in degrees, or None if advert lacks location.
+    """
     if len(raw_payload) < 100:
         return None
 
@@ -568,10 +575,15 @@ def try_decode_advert(raw_payload: bytes) -> tuple[bytes, str] | None:
         return None
 
     name = ""
+    node_type = 0
+    position: tuple[float, float] | None = None
     if app_data:
         flags = app_data[0]
+        node_type = flags & 0x0F
         pos = 1
-        if flags & 0x10:  # has location
+        if flags & 0x10 and pos + 8 <= len(app_data):  # has location
+            lat_i, lon_i = struct.unpack("<ii", app_data[pos : pos + 8])
+            position = (lat_i / 1_000_000.0, lon_i / 1_000_000.0)
             pos += 8
         if flags & 0x20:  # feat1
             pos += 2
@@ -580,4 +592,4 @@ def try_decode_advert(raw_payload: bytes) -> tuple[bytes, str] | None:
         if flags & 0x80 and pos < len(app_data):  # has name
             name = app_data[pos:].decode("utf-8", errors="replace")
 
-    return pubkey, name if name else pubkey.hex()[:8]
+    return pubkey, name if name else pubkey.hex()[:8], node_type, position

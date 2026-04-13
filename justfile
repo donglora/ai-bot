@@ -54,6 +54,10 @@ events:
 events-pretty:
     @tail -F ~/.donglora/orac-events.jsonl | jq .
 
+# Dump heard repeater positions + IQR-trimmed average we'd advertise
+positions: _ensure_tools
+    @uv run python -c 'from orac.state import load_state, heard_positions, average_heard_position; load_state(); ps = heard_positions(); print(f"heard {len(ps)} unique positions:"); [print(f"  {lat:+.3f}, {lon:+.3f}") for lat, lon in sorted(ps)]; avg = average_heard_position(); print(f"IQR-trimmed mean: {avg}" if avg else "no positions yet")'
+
 # Clean cached artifacts
 clean:
     @rm -rf .pytest_cache .ruff_cache __pycache__ orac/__pycache__ tests/__pycache__
