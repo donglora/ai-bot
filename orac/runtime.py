@@ -2,9 +2,9 @@
 
 Three threads cooperate:
 
-- **IOThread** — sole owner of the donglora ``conn``. Polls RX with a short
-  timeout, ticks the retry scheduler, fires the ADVERT timer, and transmits
-  the next ready ``TxItem`` from the priority queue.
+- **IOThread** — sole owner of the :class:`donglora.Dongle`. Polls RX with
+  a short timeout, ticks the retry scheduler, fires the ADVERT timer, and
+  transmits the next ready ``TxItem`` from the priority queue.
 
 - **Worker** (defined in :mod:`orac.worker`) — processes DM reply work items,
   calls Claude off the IO loop, and enqueues reply packets onto the TxQueue.
@@ -28,8 +28,6 @@ from enum import IntEnum
 from typing import Any
 
 import donglora as dl
-from serial import SerialException
-
 from orac import logfmt
 from orac.constants import (
     ADVERT_INTERVAL,
@@ -369,7 +367,7 @@ class RetryScheduler:
 
 
 class IOThread(threading.Thread):
-    """Sole owner of the donglora ``conn``; drives RX, retries, TX.
+    """Sole owner of the :class:`donglora.Dongle`; drives RX, retries, TX.
 
     Runs a single-threaded event loop. Does NOT call Claude — Worker does that
     on a different thread and enqueues the resulting reply onto :class:`TxQueue`.
@@ -377,10 +375,10 @@ class IOThread(threading.Thread):
 
     def __init__(
         self,
-        conn: Any,
+        dongle: dl.Dongle,
         tx_queue: TxQueue,
         retry_sched: RetryScheduler,
-        rx_handler: Callable[[dict[str, Any]], None],
+        rx_handler: Callable[[dl.RxEvent], None],
         advert_fn: Callable[[TxQueue], None],
         metrics: Metrics,
         advert_interval: float = ADVERT_INTERVAL,
@@ -388,7 +386,7 @@ class IOThread(threading.Thread):
         name: str = "orac-io",
     ) -> None:
         super().__init__(daemon=True, name=name)
-        self._conn = conn
+        self._dongle = dongle
         self._tx = tx_queue
         self._retry = retry_sched
         self._rx_handler = rx_handler
@@ -405,7 +403,6 @@ class IOThread(threading.Thread):
 
     def run(self) -> None:
         try:
-            self._conn.timeout = IO_POLL_TIMEOUT_S
             # Advert at startup to announce ourselves; timer starts from monotonic.
             self._advert_fn(self._tx)
             last_advert = time.monotonic()
@@ -416,9 +413,10 @@ class IOThread(threading.Thread):
                     if self._stop_event.is_set():
                         return
                     try:
-                        pkt = dl.recv(self._conn)
-                    except (SerialException, OSError):
-                        # Shutdown: signal interrupted a blocking serial read.
+                        pkt = self._dongle.recv(timeout=IO_POLL_TIMEOUT_S)
+                    except (dl.DongloraError, OSError):
+                        # Shutdown: signal interrupted the session reader,
+                        # or the transport went away.
                         if self._stop_event.is_set():
                             return
                         raise
@@ -468,41 +466,43 @@ class IOThread(threading.Thread):
             raise
 
     def _transmit(self, item: TxItem) -> None:
-        """Drive one TX via donglora.send. Does not retry on error — the retry
-        scheduler already covers reply failures; ACK/PATH/ADVERT are single-shot
-        by design.
+        """Drive one TX via :meth:`Dongle.tx`. Does not retry on error — the
+        retry scheduler already covers reply failures; ACK/PATH/ADVERT are
+        single-shot by design.
 
-        donglora.send() reads the TxDone response using the serial port's
-        timeout. Raise it around the call (LoRa airtime for a max DM is
-        ~425 ms + CAD) and restore after so the rest of the loop stays
-        responsive at IO_POLL_TIMEOUT_S.
+        ``Dongle.tx()`` blocks until TX_DONE arrives (including LoRa airtime +
+        CAD), so ``timeout`` must accommodate the maximum-size-payload air time.
         """
-        old_timeout = self._conn.timeout
-        self._conn.timeout = TX_RESPONSE_TIMEOUT_S
         try:
-            resp = dl.send(self._conn, "Transmit", payload=item.packet)
-            rtype = resp.get("type")
-            if rtype == "TxDone":
-                self._metrics.inc("tx_sent")
-                self._metrics.inc(f"tx_{_priority_tag(item.priority)}_sent")
-                logfmt.net("TX %s [%dB]", item.label, len(item.packet))
-            elif rtype == "Timeout":
-                self._metrics.inc("tx_error_timeout")
-                log.error("TX %s: firmware timeout", item.label)
-            elif rtype == "Error":
-                code = resp.get("code")
-                self._metrics.inc(f"tx_error_code_{code}")
-                if code == 1:  # RadioBusy
-                    self._metrics.inc("tx_radio_busy")
-                log.error("TX %s: firmware error code=%s", item.label, code)
-            else:
-                self._metrics.inc("tx_error_other")
-                log.error("TX %s: unexpected response %s", item.label, resp)
+            self._dongle.tx(item.packet, timeout=TX_RESPONSE_TIMEOUT_S)
+            self._metrics.inc("tx_sent")
+            self._metrics.inc(f"tx_{_priority_tag(item.priority)}_sent")
+            logfmt.net("TX %s [%dB]", item.label, len(item.packet))
+        except dl.TimeoutError_ as e:
+            self._metrics.inc("tx_error_timeout")
+            log.error("TX %s: firmware timeout: %s", item.label, e)
+        except dl.ChannelBusy as e:
+            self._metrics.inc("tx_channel_busy")
+            log.error("TX %s: CAD detected channel busy: %s", item.label, e)
+        except dl.Cancelled as e:
+            self._metrics.inc("tx_cancelled")
+            log.error("TX %s: cancelled by firmware: %s", item.label, e)
+        except dl.BusyError as e:
+            # Old protocol's RadioBusy maps to EBUSY in DongLoRa Protocol v2: the firmware
+            # TX queue was full when we tried to enqueue.
+            self._metrics.inc("tx_radio_busy")
+            log.error("TX %s: firmware TX queue busy: %s", item.label, e)
+        except dl.NotConfiguredError as e:
+            # The Dongle auto-recovery already re-applied the config and
+            # retried once; if we still see this, give up on this TX.
+            self._metrics.inc("tx_not_configured")
+            log.error("TX %s: device lost config: %s", item.label, e)
+        except dl.DongloraError as e:
+            self._metrics.inc("tx_error_other")
+            log.error("TX %s: device error: %s", item.label, e)
         except Exception as e:
             self._metrics.inc("tx_error_exception")
             log.exception("TX %s exception: %s", item.label, e)
-        finally:
-            self._conn.timeout = old_timeout
 
 
 def _priority_tag(prio: int) -> str:

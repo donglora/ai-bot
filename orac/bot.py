@@ -9,8 +9,6 @@ import signal
 import sys
 import time
 
-import serial
-
 import donglora as dl
 from orac import events, logfmt
 from orac.constants import (
@@ -75,8 +73,8 @@ def _make_rebuild_reply(metrics: Metrics):
 class BotRuntime:
     """Holds the per-connection runtime: threads + queues + state tables."""
 
-    def __init__(self, conn) -> None:
-        self.conn = conn
+    def __init__(self, dongle: dl.Dongle) -> None:
+        self.dongle = dongle
         self.metrics = Metrics()
         self.tx_queue = TxQueue()
         self.pending_acks = PendingAckTable()
@@ -113,7 +111,7 @@ class BotRuntime:
         self.advert_pusher = make_advert_pusher(build_advert_packet, self.metrics)
 
         self.io_thread = IOThread(
-            conn=self.conn,
+            dongle=self.dongle,
             tx_queue=self.tx_queue,
             retry_sched=self.retry_scheduler,
             rx_handler=self.rx_router.handle,
@@ -179,12 +177,11 @@ def connect_and_run(port: str | None) -> None:
     global _active_runtime
 
     boot("Connecting...")
-    conn = dl.connect(port=port, timeout=2)
+    # `dl.connect()` auto-discovers the port, sends GET_INFO, applies
+    # RADIO_CONFIG via SET_CONFIG, and starts the keepalive daemon —
+    # no manual Ping/SetConfig/StartRx dance required.
+    dongle = dl.connect(port=port, timeout=2, config=RADIO_CONFIG)
     boot("Connected")
-
-    dl.send(conn, "Ping")
-    dl.send(conn, "SetConfig", config=RADIO_CONFIG)
-    dl.send(conn, "StartRx")
 
     triggers_str = ", ".join(TRIGGERS)
     boot("%s listening (Ctrl+C to stop)", BOT_NAME)
@@ -194,7 +191,7 @@ def connect_and_run(port: str | None) -> None:
         triggers_str,
     )
 
-    runtime = BotRuntime(conn)
+    runtime = BotRuntime(dongle)
     _active_runtime = runtime
 
     try:
@@ -213,9 +210,10 @@ def connect_and_run(port: str | None) -> None:
         runtime.join(timeout=3.0)
         runtime.dump_metrics()
         _active_runtime = None
+        # `Dongle.close()` stops the keepalive thread, drains pending
+        # commands, and releases the transport fd. Idempotent.
         with contextlib.suppress(Exception):
-            conn.timeout = 2
-            dl.send(conn, "StopRx")
+            dongle.close()
 
 
 # ── Entry point ──────────────────────────────────────────────────
@@ -254,7 +252,7 @@ def main() -> None:
     while True:
         try:
             connect_and_run(port)
-        except (serial.SerialException, ConnectionError, OSError) as e:
+        except (dl.DongloraError, ConnectionError, OSError) as e:
             log.error("Disconnected: %s", e)
             boot("Reconnecting when device reappears...")
             time.sleep(1)

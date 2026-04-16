@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import donglora as dl
+
 # ── Bot identity ─────────────────────────────────────────────────
 
 BOT_NAME: str = "Orac"
@@ -45,14 +47,21 @@ STATE_FILE: Path = DATA_DIR / "orac_state.json"
 
 # ── Radio ────────────────────────────────────────────────────────
 
-RADIO_CONFIG: dict[str, int] = {
-    "freq_hz": 910_525_000,
-    "bw": 6,  # 62.5 kHz
-    "sf": 7,
-    "cr": 5,  # CR 4/5
-    "sync_word": 0x3444,
-    "tx_power_dbm": -128,  # TX_POWER_MAX
-}
+RADIO_CONFIG: dl.LoRaConfig = dl.LoRaConfig(
+    freq_hz=910_525_000,
+    bw=dl.LoRaBandwidth.KHZ_62_5,
+    sf=7,
+    cr=dl.LoRaCodingRate.CR_4_5,
+    sync_word=0x3444,
+    tx_power_dbm=22,  # DongLoRa Protocol v2 removed the "max power" sentinel; 22 dBm
+    # is the SX1262 chip ceiling and the practical upper bound on every
+    # current DongLoRa board. If you operate a board with a lower cap,
+    # lower this (or read `d.info.tx_power_max_dbm` and rebuild the config).
+    preamble_len=16,
+    header_mode=dl.LoRaHeaderMode.EXPLICIT,
+    payload_crc=True,
+    iq_invert=False,
+)
 
 # ── AI system prompt ─────────────────────────────────────────────
 

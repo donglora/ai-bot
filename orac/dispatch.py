@@ -7,8 +7,8 @@ import random
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
 
+import donglora as dl
 from orac import events, followup, logfmt
 from orac.ai import extract_trigger_query, rate_limit_message
 from orac.constants import (
@@ -122,9 +122,9 @@ class RxRouter:
 
     # -- top-level dispatch ---------------------------------------
 
-    def handle(self, pkt: dict[str, Any]) -> None:
-        payload_bytes: bytes = pkt.get("payload", b"")
-        snr: float = float(pkt.get("snr", 0))
+    def handle(self, pkt: dl.RxEvent) -> None:
+        payload_bytes = pkt.data
+        snr = pkt.snr_db
 
         parsed = parse_header_and_path(payload_bytes)
         if parsed is None:
