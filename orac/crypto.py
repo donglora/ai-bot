@@ -310,8 +310,8 @@ def build_advert_payload() -> bytes:
     timestamp = struct.pack("<I", int(time.time()))
     name_bytes = BOT_NAME.encode("utf-8")
     if heard_position_count() >= 5 and (avg := average_heard_position()) is not None:
-        lat_i = int(round(avg[0] * 1_000_000))
-        lon_i = int(round(avg[1] * 1_000_000))
+        lat_i = round(avg[0] * 1_000_000)
+        lon_i = round(avg[1] * 1_000_000)
         # flags: has_name (0x80) | has_location (0x10) | chat node (0x01)
         app_data = bytes([0x91]) + struct.pack("<ii", lat_i, lon_i) + name_bytes
     else:

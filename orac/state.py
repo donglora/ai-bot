@@ -17,7 +17,7 @@ log = logging.getLogger("orac")
 
 # ── Persistent state ─────────────────────────────────────────────
 
-_state: dict[str, dict[str, object]] = {
+_state: dict[str, dict[str, object] | list[list[float]]] = {
     "channel_history": {},  # channel_name -> list of messages
     "dm_history": {},  # peer_pubkey_hex -> list of messages
     "known_nodes": {},  # pubkey_hex -> {"name": str, "seen": float}

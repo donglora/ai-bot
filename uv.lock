@@ -178,7 +178,7 @@ wheels = [
 
 [[package]]
 name = "donglora"
-version = "0.2.0"
+version = "1.0.0"
 source = { editable = "../client-py" }
 dependencies = [
     { name = "cobs" },
@@ -206,7 +206,7 @@ dev = [
 
 [[package]]
 name = "donglora-ai-bot"
-version = "0.1.0"
+version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "anthropic" },
