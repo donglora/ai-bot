@@ -6,7 +6,7 @@ license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Stephen Waits" }]
 dependencies = [
-    "donglora>=1.0.0,<2.0.0",
+    "donglora>=1.1.0,<2.0.0",
     "anthropic",
     "cobs",
     "pyserial",

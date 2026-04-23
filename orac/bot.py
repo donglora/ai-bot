@@ -178,8 +178,9 @@ def connect_and_run(port: str | None) -> None:
 
     boot("Connecting...")
     # `dl.connect()` auto-discovers the port, sends GET_INFO, applies
-    # RADIO_CONFIG via SET_CONFIG, and starts the keepalive daemon —
-    # no manual Ping/SetConfig/StartRx dance required.
+    # RADIO_CONFIG via SET_CONFIG (with `tx_power_dbm` auto-clamped to
+    # the device's PA ceiling — SX1262 caps at 22 dBm, SX1276 PA_BOOST
+    # at 20), and starts the keepalive daemon.
     dongle = dl.connect(port=port, timeout=2, config=RADIO_CONFIG)
     boot("Connected")
 

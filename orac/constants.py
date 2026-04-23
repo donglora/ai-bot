@@ -53,10 +53,10 @@ RADIO_CONFIG: dl.LoRaConfig = dl.LoRaConfig(
     sf=7,
     cr=dl.LoRaCodingRate.CR_4_5,
     sync_word=0x3444,
-    tx_power_dbm=22,  # DongLoRa Protocol v2 removed the "max power" sentinel; 22 dBm
-    # is the SX1262 chip ceiling and the practical upper bound on every
-    # current DongLoRa board. If you operate a board with a lower cap,
-    # lower this (or read `d.info.tx_power_max_dbm` and rebuild the config).
+    tx_power_dbm=22,  # Requested max. `connect_and_run` clamps this down to
+    # `dongle.info.tx_power_max_dbm` at connect time, so each board
+    # transmits at its own PA ceiling (SX1262: 22 dBm, SX1276 PA_BOOST:
+    # 20 dBm, …) without needing a per-board config table here.
     preamble_len=16,
     header_mode=dl.LoRaHeaderMode.EXPLICIT,
     payload_crc=True,
