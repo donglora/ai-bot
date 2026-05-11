@@ -52,7 +52,7 @@ RADIO_CONFIG: dl.LoRaConfig = dl.LoRaConfig(
     bw=dl.LoRaBandwidth.KHZ_62_5,
     sf=7,
     cr=dl.LoRaCodingRate.CR_4_5,
-    sync_word=0x3444,
+    sync_word=0x1424,
     tx_power_dbm=22,  # Requested max. `connect_and_run` clamps this down to
     # `dongle.info.tx_power_max_dbm` at connect time, so each board
     # transmits at its own PA ceiling (SX1262: 22 dBm, SX1276 PA_BOOST:
